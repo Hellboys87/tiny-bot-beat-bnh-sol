@@ -3,7 +3,12 @@
 Strategy (paper trading, hourly bars, 7 Solana symbols, 10,000 USDC):
   * Mean reversion: buy a symbol when it is oversold -- its close is DIP below
     its 12h EMA and its 6h return is below R6 (a sharp short dip inside a
-    choppy market).
+    choppy market). A second trigger catches slow drifts the sharp-dip
+    trigger misses: close DRIFT below the EMA with a flat 6h return (price
+    grinding below its mean in a flat market rather than dropping sharply)
+    -- these add trades in ranging conditions where the sharp dip rarely
+    fires, which matters on the short 72-bar final window. The same exits
+    (stop, trailing stop, time exit) bound the downside of these entries.
   * Exits: take profit at +BOUNCE from entry, hard stop at -STOP, a trailing
     stop TRAIL below the peak since entry, or a time exit after MAX_HOLD bars
     (stale positions are sold to free capital for fresh dips). No shorts,
@@ -24,8 +29,9 @@ messages, uses no clock, randomness, environment or network, and writes
 nothing to disk. Diagnostics go to stderr only; stdout carries replies.
 
 Parameters (defaults are the tuned variant; see README "Run it"):
-  DIP 0.015, R6 -0.01, MOM 9.9 (breakout trigger off), BOUNCE 0.08, STOP 0.05,
-  TRAIL 0.08, MAX_HOLD 30, SIZE 0.25, MAX_POS 5, EMA_SLOW 12, MIN_HIST 26.
+  DIP 0.015, R6 -0.01, DRIFT 0.01, MOM 9.9 (breakout trigger off), BOUNCE 0.08,
+  STOP 0.05, TRAIL 0.08, MAX_HOLD 30, SIZE 0.25, MAX_POS 5, EMA_SLOW 12,
+  MIN_HIST 26.
 """
 
 import json
@@ -34,6 +40,8 @@ import sys
 # --- strategy parameters -------------------------------------------------
 DIP = 0.015        # entry: close this far below the 12h EMA (fraction)
 R6 = -0.01         # entry: 6h return must be below this
+DRIFT = 0.01       # slow-drift entry: close this far below the 12h EMA
+                   # with a flat 6h return (see decide)
 MOM_N = 12         # momentum lookback (bars) for the breakout trigger
 MOM = 9.9          # entry: 12h return above this + close above EMA12 (9.9 = momentum trigger off)
 BOUNCE = 0.08      # exit: take profit at this return from entry
@@ -193,6 +201,13 @@ class Bot:
                 mom = c / hist[-MOM_N - 1] - 1.0 if len(hist) > MOM_N else 0.0
                 score = None
                 if dip > DIP and ret6 < R6:
+                    score = dip
+                elif dip > DRIFT and R6 <= ret6 < 0.01:
+                    # Slow drift below the EMA with a flat 6h return:
+                    # ranging-market mean reversion the sharp-dip
+                    # trigger misses. No uptick filter: in a flat
+                    # market the drift itself is the signal, and the
+                    # stop / trailing stop / time exit bound the risk.
                     score = dip
                 elif mom > MOM and c > self.ema12[sym]:
                     score = mom
